@@ -384,42 +384,39 @@ infiniStatus_t Descriptor::calculate(
                 cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH);
             }
             
-            // 调试信息 - 打印关键参数
-            printf("[DEBUG] RMSNormGemm GEMM params: m=%d, n=%d, k=%d\n", 
-                static_cast<int>(gemm_info.m), static_cast<int>(gemm_info.n), static_cast<int>(gemm_info.k));
-            printf("[DEBUG] Leading dimensions: lda=%d, ldb=%d, ldc=%d\n",
-                static_cast<int>(gemm_info.k), 
-                static_cast<int>(gemm_info.b_matrix.ld()),
-                static_cast<int>(gemm_info.c_matrix.ld()));
-            printf("[DEBUG] Data types: a_type=%d, b_type=%d, c_type=%d\n", a_type, b_type, c_type);
+            // 计算: normed_buffer [m,k] × b [k,n] = c [m,n]
+            // 注意：cuBLAS使用列主序，需要正确处理行主序矩阵
+            // 对于行主序 C = A*B，在cuBLAS中应该计算 B^T * A^T = C^T
+            // 但这里我们要直接计算 A*B，所以：
+            // - A: normed_buffer [m,k] 作为第一个矩阵
+            // - B: b [k,n] 作为第二个矩阵  
+            // - C: c [m,n] 作为输出矩阵
             
             cublasStatus_t status = cublasGemmStridedBatchedEx(
                 handle,
-                CUBLAS_OP_N,  // normed_buffer不转置
-                CUBLAS_OP_N,  // b不转置  
-                static_cast<int>(gemm_info.n),     // n
-                static_cast<int>(gemm_info.m),     // m
-                static_cast<int>(gemm_info.k),     // k
+                CUBLAS_OP_N,  // B矩阵不转置
+                CUBLAS_OP_N,  // A矩阵不转置  
+                static_cast<int>(gemm_info.n),     // n: B矩阵的列数，也是输出的列数
+                static_cast<int>(gemm_info.m),     // m: A矩阵的行数，也是输出的行数  
+                static_cast<int>(gemm_info.k),     // k: 内积维度
                 &alpha,
-                use_fp16 ? reinterpret_cast<const void*>(normed_buffer_f16) : reinterpret_cast<const void*>(normed_buffer_f32), // A
-                a_type,
-                static_cast<int>(gemm_info.k),     // lda: normed_buffer的leading dimension
-                0,                                 // strideA: 没有batch，stride=0
-                b,                                 // B: b [k,n]
+                b,                                 // B矩阵 [k,n]
                 b_type,
-                static_cast<int>(gemm_info.b_matrix.ld()),  // ldb: 使用正确的ld()方法
-                0,                                 // strideB: 没有batch，stride=0
+                static_cast<int>(gemm_info.b_matrix.cols), // ldb: B矩阵的列数作为leading dimension
+                0,                                 // strideB
+                use_fp16 ? reinterpret_cast<const void*>(normed_buffer_f16) : reinterpret_cast<const void*>(normed_buffer_f32), // A矩阵 [m,k]
+                a_type,
+                static_cast<int>(gemm_info.k),     // lda: normed_buffer在行主序中的leading dimension是k
+                0,                                 // strideA
                 &beta,
-                c,                                 // C: c [m,n]
+                c,                                 // C矩阵 [m,n]
                 c_type,
-                static_cast<int>(gemm_info.c_matrix.ld()),  // ldc: 使用正确的ld()方法
-                0,                                 // strideC: 没有batch，stride=0
-                1,                                 // batchCount: 只有1个矩阵
+                static_cast<int>(gemm_info.c_matrix.ld()),  // ldc: 输出矩阵的leading dimension
+                0,                                 // strideC
+                1,                                 // batchCount
                 compute_type,
                 use_fp16 ? CUBLAS_GEMM_DEFAULT_TENSOR_OP : CUBLAS_GEMM_DEFAULT
             );
-            
-            printf("[DEBUG] cuBLAS status: %d (0=success)\n", status);
             
             if (status != CUBLAS_STATUS_SUCCESS) {
                 return INFINI_STATUS_INTERNAL_ERROR;
